@@ -180,6 +180,40 @@ export class Expectation<T> {
     }
   }
 
+  /** Assert that an async function rejects. */
+  async toThrowAsync(errClassOrMsg?: (new (...args: any[]) => Error) | string): Promise<void> {
+    if (typeof this.actual !== 'function') {
+      throw new AssertionError('Expected a function for .toThrowAsync()');
+    }
+    let threw = false;
+    let thrownError: unknown = null;
+    try {
+      await (this.actual as Function)();
+    } catch (e) {
+      threw = true;
+      thrownError = e;
+    }
+    if (!threw) {
+      this.assert(false, `Expected async function to throw${this.notStr} but it did not throw`);
+      return;
+    }
+    if (!errClassOrMsg) {
+      this.assert(threw, `Expected async function to throw${this.notStr} but it did not throw`);
+    } else if (typeof errClassOrMsg === 'function') {
+      this.assert(
+        threw && thrownError instanceof errClassOrMsg,
+        `Expected async function to throw ${errClassOrMsg.name}${this.notStr}` +
+        (threw ? ` but got ${(thrownError as Error).constructor.name}` : ' (did not throw)'),
+      );
+    } else if (typeof errClassOrMsg === 'string') {
+      const msg = thrownError instanceof Error ? thrownError.message : String(thrownError);
+      this.assert(
+        msg.includes(errClassOrMsg),
+        `Expected error message to contain ${JSON.stringify(errClassOrMsg)}${this.notStr} but got ${JSON.stringify(msg)}`,
+      );
+    }
+  }
+
   // ── Internal ──
 
   private get notStr(): string {

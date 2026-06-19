@@ -233,3 +233,21 @@ describe('expect(fn).toThrow', () => {
     expect(() => { /* no throw */ }).not.toThrow(AssertionError);
   });
 });
+
+// ── Async Error assertions (expect(fn).toThrowAsync) ─────────────────────────
+
+describe('expect(fn).toThrowAsync', () => {
+  it('catches async thrown errors', async () => {
+    await expect(async () => { throw new AssertionError('boom'); }).toThrowAsync(AssertionError);
+    await expect(async () => { throw new Error('boom'); }).toThrowAsync(Error);
+  });
+
+  it('fails when async function does not throw', async () => {
+    await expect(async () => { /* no throw */ }).not.toThrowAsync(AssertionError);
+  });
+
+  it('matches error message', async () => {
+    await expect(async () => { throw new Error('not found'); }).toThrowAsync('not found');
+    await expect(async () => { throw new Error('not found'); }).not.toThrowAsync('timeout');
+  });
+});
