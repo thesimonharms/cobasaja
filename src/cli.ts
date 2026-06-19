@@ -7,6 +7,7 @@
  *   cobasaja                  # Run all tests in cwd
  *   cobasaja --update         # Update snapshots
  *   cobasaja --root ./tests   # Run tests in a specific directory
+ *   cobasaja --verbose        # Show detailed test output
  */
 
 import { run } from './runner.js';
@@ -21,6 +22,7 @@ if (args.includes('--help') || args.includes('-h')) {
     cobasaja                    Run all tests in current directory
     cobasaja --update           Update snapshots
     cobasaja --root ./tests     Run tests in a specific directory
+    cobasaja --verbose          Show detailed test output
     cobasaja --help             Show this help
   `);
   process.exit(0);
@@ -32,8 +34,9 @@ const root = rootIndex >= 0 && rootIndex + 1 < args.length
   : process.cwd();
 
 const update = args.includes('--update');
+const verbose = args.includes('--verbose');
 
-run({ root, update }).then(exitCode => {
+run({ root, update, verbose }).then(exitCode => {
   process.exit(exitCode);
 }).catch(err => {
   console.error(`Fatal: ${err.message}`);

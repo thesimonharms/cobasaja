@@ -162,6 +162,9 @@ export async function run(options: RunnerOptions = {}): Promise<number> {
       }
     }
     console.log();
+    if (options.verbose) {
+      console.log(`  ${fileResults.length} tests, ${fileResults.filter(r => !r.passed).length} failed`);
+    }
   }
 
   const failed = allResults.filter(r => !r.passed);
