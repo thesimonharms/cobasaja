@@ -196,6 +196,10 @@ export async function runAll(): Promise<TestResult[]> {
         const start = performance.now();
         try {
           await block.beforeEach?.();
+          // Override snapshot with per-test key so multiple tests in a block
+          // produce unique snapshot keys ("describe_name test_name")
+          ctx.snapshot = (value: unknown) =>
+            toMatchSnapshot(currentTestFile, `${block.name} ${t.name}`, value);
           await t.fn(ctx);
           results.push({
             describe: block.name,
