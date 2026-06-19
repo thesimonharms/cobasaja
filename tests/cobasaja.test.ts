@@ -234,6 +234,22 @@ describe('expect(fn).toThrow', () => {
   });
 });
 
+// ── AssertionError stack cleaning ────────────────────────────────────────────
+
+describe('AssertionError stack cleaning', () => {
+  it('excludes cobasaja internal frames', async () => {
+    try {
+      expect(1).toBe(2);
+    } catch (e: any) {
+      const stack = e.stack || '';
+      // Should NOT contain cobasaja src paths (matchers.ts lines)
+      expect(stack.includes('matchers.ts')).toBe(false);
+      // SHOULD contain the test file
+      expect(stack.includes('cobasaja.test.ts')).toBe(true);
+    }
+  });
+});
+
 // ── Async Error assertions (expect(fn).toThrowAsync) ─────────────────────────
 
 describe('expect(fn).toThrowAsync', () => {
@@ -249,5 +265,38 @@ describe('expect(fn).toThrowAsync', () => {
   it('matches error message', async () => {
     await expect(async () => { throw new Error('not found'); }).toThrowAsync('not found');
     await expect(async () => { throw new Error('not found'); }).not.toThrowAsync('timeout');
+  });
+});
+
+// ── Numeric matchers ──────────────────────────────────────────────────────────
+
+describe('expect().toBeGreaterThan / toBeLessThan', () => {
+  it('toBeGreaterThan', async () => {
+    expect(() => expect(5).toBeGreaterThan(3)).not.toThrow();
+    expect(() => expect(3).toBeGreaterThan(5)).toThrow(AssertionError);
+    expect(() => expect(3).toBeGreaterThan(3)).toThrow(AssertionError);
+  });
+  it('toBeGreaterThanOrEqual', async () => {
+    expect(() => expect(5).toBeGreaterThanOrEqual(3)).not.toThrow();
+    expect(() => expect(3).toBeGreaterThanOrEqual(3)).not.toThrow();
+    expect(() => expect(2).toBeGreaterThanOrEqual(3)).toThrow(AssertionError);
+  });
+  it('toBeLessThan', async () => {
+    expect(() => expect(3).toBeLessThan(5)).not.toThrow();
+    expect(() => expect(5).toBeLessThan(3)).toThrow(AssertionError);
+    expect(() => expect(3).toBeLessThan(3)).toThrow(AssertionError);
+  });
+  it('toBeLessThanOrEqual', async () => {
+    expect(() => expect(3).toBeLessThanOrEqual(5)).not.toThrow();
+    expect(() => expect(3).toBeLessThanOrEqual(3)).not.toThrow();
+    expect(() => expect(5).toBeLessThanOrEqual(3)).toThrow(AssertionError);
+  });
+});
+describe('expect().toBeCloseTo', () => {
+  it('compares floating point numbers', async () => {
+    expect(() => expect(0.1 + 0.2).toBeCloseTo(0.3)).not.toThrow();
+    expect(() => expect(0.1 + 0.2).toBeCloseTo(0.3, 17)).toThrow(AssertionError);
+    expect(() => expect(1.0).toBeCloseTo(1.001, 2)).not.toThrow();
+    expect(() => expect(1.1).toBeCloseTo(1.0, 1)).toThrow(AssertionError);
   });
 });

@@ -4,6 +4,14 @@
 
 **cobasaja** spawns MCP servers over stdio and runs Pest-like `describe`/`it` tests against them. Built for AI-agent tooling where reliability matters.
 
+## v1.0.0 What's New
+
+- **`toThrowAsync()`** — test async error handling with error class or message matching
+- **Numeric matchers** — `toBeGreaterThan`, `toBeLessThan`, `toBeGreaterThanOrEqual`, `toBeLessThanOrEqual`, `toBeCloseTo`
+- **Smart snapshots** — snapshot keys now use test names instead of a hardcoded fallback (multiple snapshots per test work correctly)
+- **Cleaner errors** — assertion stack traces stripped of cobasaja internals
+- **`--verbose`** — detailed per-file test output flag
+
 ## Install
 
 ```bash
@@ -84,6 +92,11 @@ Define a test case. The async callback receives a context object:
 | `.toContain(value)` | String or array containment |
 | `.toMatchObject(obj)` | Partial object match |
 | `.toHaveLength(n)` | Length check |
+| `.toBeGreaterThan(n)` | Numeric: actual > expected |
+| `.toBeGreaterThanOrEqual(n)` | Numeric: actual >= expected |
+| `.toBeLessThan(n)` | Numeric: actual < expected |
+| `.toBeLessThanOrEqual(n)` | Numeric: actual <= expected |
+| `.toBeCloseTo(n, digits?)` | Floating-point comparison within precision |
 | `.toBeDefined()` | Not `undefined` |
 | `.toBeUndefined()` | `undefined` |
 | `.toBeNull()` | `null` |
@@ -99,6 +112,9 @@ Define a test case. The async callback receives a context object:
 |---|---|
 | `.toThrow()` | Function throws |
 | `.toThrow(ErrorClass)` | Throws specific error type |
+| `.toThrowAsync()` | Async function rejects |
+| `.toThrowAsync(ErrorClass)` | Async function rejects specific error type |
+| `.toThrowAsync(msg)` | Async function rejects with matching message |
 
 **`.not`** — inverts any matcher: `expect(x).not.toBe(y)`
 

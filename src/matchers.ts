@@ -75,6 +75,55 @@ export class Expectation<T> {
     );
   }
 
+  // ── Numeric matchers ──
+
+  /** Value is greater than expected */
+  toBeGreaterThan(expected: number): void {
+    const actual = this.actual as any;
+    this.assert(
+      typeof actual === 'number' && actual > expected,
+      `Expected ${actual} to be > ${expected}${this.notStr}`,
+    );
+  }
+
+  /** Value is greater than or equal to expected */
+  toBeGreaterThanOrEqual(expected: number): void {
+    const actual = this.actual as any;
+    this.assert(
+      typeof actual === 'number' && actual >= expected,
+      `Expected ${actual} to be >= ${expected}${this.notStr}`,
+    );
+  }
+
+  /** Value is less than expected */
+  toBeLessThan(expected: number): void {
+    const actual = this.actual as any;
+    this.assert(
+      typeof actual === 'number' && actual < expected,
+      `Expected ${actual} to be < ${expected}${this.notStr}`,
+    );
+  }
+
+  /** Value is less than or equal to expected */
+  toBeLessThanOrEqual(expected: number): void {
+    const actual = this.actual as any;
+    this.assert(
+      typeof actual === 'number' && actual <= expected,
+      `Expected ${actual} to be <= ${expected}${this.notStr}`,
+    );
+  }
+
+  /** Floating-point comparison with numDigits precision */
+  toBeCloseTo(expected: number, numDigits: number = 2): void {
+    const actual = this.actual as any;
+    const precision = Math.pow(10, -numDigits);
+    const diff = Math.abs((actual as number) - expected);
+    this.assert(
+      typeof actual === 'number' && diff < precision,
+      `Expected ${actual} to be close to ${expected} (within ${numDigits} decimal places)${this.notStr}`,
+    );
+  }
+
   // ── Containment ──
 
   /** String or array contains */

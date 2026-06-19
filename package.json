@@ -1,6 +1,6 @@
 {
   "name": "cobasaja",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Deterministic MCP testing framework — just try it. Spawns MCP servers over stdio, runs Pest-like describe/it tests with snapshot support, and keeps you stress-free.",
   "type": "module",
   "main": "./dist/index.js",
