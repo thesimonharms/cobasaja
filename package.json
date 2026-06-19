@@ -13,9 +13,10 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist/"],
+  "files": ["dist/", "LICENSE"],
   "scripts": {
     "build": "tsc",
+    "test": "node dist/cli.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": ["mcp", "test", "testing", "framework", "pest", "deterministic"],
