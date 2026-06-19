@@ -37,7 +37,12 @@ export function matchObject(actual: unknown, expected: Record<string, unknown>):
   if (actual == null || typeof actual !== 'object') return false;
   for (const [key, val] of Object.entries(expected)) {
     const actualVal = (actual as Record<string, unknown>)[key];
-    if (!deepEqual(actualVal, val)) return false;
+    // Recurse for nested objects (partial match all the way down)
+    if (val != null && typeof val === 'object' && !Array.isArray(val)) {
+      if (!matchObject(actualVal, val as Record<string, unknown>)) return false;
+    } else {
+      if (!deepEqual(actualVal, val)) return false;
+    }
   }
   return true;
 }

@@ -25,3 +25,4 @@
 export { defineServer, describe, it, test, expect, beforeAll, afterAll, beforeEach, afterEach } from './api.js';
 export type { TestContext } from './api.js';
 export type { McpServerConfig, McpToolDefinition, McpToolResult, McpClient } from './client.js';
+export { AssertionError } from './matchers.js';

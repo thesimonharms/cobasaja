@@ -157,69 +157,100 @@ export interface TestResult {
 
 /** Run all registered tests. Returns results. */
 export async function runAll(): Promise<TestResult[]> {
-  if (!serverConfig) {
-    throw new Error('No server configured — call defineServer() first');
-  }
-
   const results: TestResult[] = [];
 
   for (const block of describeBlocks) {
-    // Connect once per describe block
-    const client = new McpClient(serverConfig);
     let ctx: TestContext;
 
-    try {
-      await client.connect();
+    if (serverConfig) {
+      // MCP mode — connect once per describe block
+      const client = new McpClient(serverConfig);
+
+      try {
+        await client.connect();
+        ctx = {
+          tools: client.tools,
+          call: (name, args) => client.callTool(name, args),
+          client,
+          snapshot: (value) => toMatchSnapshot(currentTestFile, `${block.name} ${'snapshot'}`, value),
+        };
+
+        await block.beforeAll?.();
+      } catch (err: any) {
+        // Connection failed — report all tests in this block as failed
+        for (const t of block.tests) {
+          results.push({
+            describe: block.name,
+            test: t.name,
+            passed: false,
+            error: `Connection failed: ${err.message}`,
+            duration: 0,
+          });
+        }
+        await client.close().catch(() => {});
+        continue;
+      }
+
+      // Run each test
+      for (const t of block.tests) {
+        const start = performance.now();
+        try {
+          await block.beforeEach?.();
+          await t.fn(ctx);
+          results.push({
+            describe: block.name,
+            test: t.name,
+            passed: true,
+            duration: Math.round(performance.now() - start),
+          });
+        } catch (err: any) {
+          results.push({
+            describe: block.name,
+            test: t.name,
+            passed: false,
+            error: err.message,
+            duration: Math.round(performance.now() - start),
+          });
+        } finally {
+          await block.afterEach?.();
+        }
+      }
+
+      await block.afterAll?.();
+      await client.close().catch(() => {});
+    } else {
+      // Unit-test mode — no MCP server, tests get a non-functional context
       ctx = {
-        tools: client.tools,
-        call: (name, args) => client.callTool(name, args),
-        client,
-        snapshot: (value) => toMatchSnapshot(currentTestFile, `${block.name} ${'snapshot'}`, value),
+        tools: [],
+        call: () => { throw new Error('No MCP server configured — call defineServer()'); },
+        client: null as any,
+        snapshot: () => { throw new Error('Snapshots require an MCP server — call defineServer()'); },
       };
 
-      await block.beforeAll?.();
-    } catch (err: any) {
-      // Connection failed — report all tests in this block as failed
       for (const t of block.tests) {
-        results.push({
-          describe: block.name,
-          test: t.name,
-          passed: false,
-          error: `Connection failed: ${err.message}`,
-          duration: 0,
-        });
-      }
-      await client.close().catch(() => {});
-      continue;
-    }
-
-    // Run each test
-    for (const t of block.tests) {
-      const start = performance.now();
-      try {
-        await block.beforeEach?.();
-        await t.fn(ctx);
-        results.push({
-          describe: block.name,
-          test: t.name,
-          passed: true,
-          duration: Math.round(performance.now() - start),
-        });
-      } catch (err: any) {
-        results.push({
-          describe: block.name,
-          test: t.name,
-          passed: false,
-          error: err.message,
-          duration: Math.round(performance.now() - start),
-        });
-      } finally {
-        await block.afterEach?.();
+        const start = performance.now();
+        try {
+          await block.beforeEach?.();
+          await t.fn(ctx);
+          results.push({
+            describe: block.name,
+            test: t.name,
+            passed: true,
+            duration: Math.round(performance.now() - start),
+          });
+        } catch (err: any) {
+          results.push({
+            describe: block.name,
+            test: t.name,
+            passed: false,
+            error: err.message,
+            duration: Math.round(performance.now() - start),
+          });
+        } finally {
+          await block.afterEach?.();
+        }
       }
     }
-
-    await block.afterAll?.();
-    await client.close().catch(() => {});
   }
 
   return results;

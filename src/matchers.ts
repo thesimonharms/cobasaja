@@ -151,6 +151,35 @@ export class Expectation<T> {
     );
   }
 
+  // ── Error assertions ──
+
+  /** Assert that a function throws. If errClass is provided, check the error type. */
+  toThrow(errClass?: new (...args: any[]) => Error): void {
+    if (typeof this.actual !== 'function') {
+      throw new AssertionError('Expected a function for .toThrow()');
+    }
+    let threw = false;
+    let thrownError: unknown = null;
+    try {
+      (this.actual as Function)();
+    } catch (e) {
+      threw = true;
+      thrownError = e;
+    }
+    if (errClass) {
+      this.assert(
+        threw && thrownError instanceof errClass,
+        `Expected function to throw ${errClass.name}${this.notStr}` +
+        (threw ? ` but got ${(thrownError as Error).constructor.name}` : ' (did not throw)'),
+      );
+    } else {
+      this.assert(
+        threw,
+        `Expected function to throw${this.notStr} but it did not throw`,
+      );
+    }
+  }
+
   // ── Internal ──
 
   private get notStr(): string {
