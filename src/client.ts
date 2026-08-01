@@ -5,14 +5,13 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { randomUUID } from 'node:crypto';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface McpServerConfig {
   command: string;
   args?: string[];
-  /** Connection timeout in ms. Default: 10000 */
+  /** Connection / per-request timeout in ms. Default: 10000 */
   timeout?: number;
   /** Cwd for the server process */
   cwd?: string;
@@ -48,6 +47,8 @@ export class McpClient {
   private _tools: McpToolDefinition[] | null = null;
   private config: McpServerConfig;
   private connected = false;
+  private stderr = '';
+  private closed = false;
 
   constructor(config: McpServerConfig) {
     this.config = config;
@@ -56,8 +57,11 @@ export class McpClient {
   /** Spawn the server process and run the initialize handshake */
   async connect(): Promise<void> {
     if (this.connected) return;
+    this.closed = false;
+    this.stderr = '';
 
     const { command, args = [], timeout = 10000, cwd, env } = this.config;
+    const timeoutMs = timeout;
 
     this.proc = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -65,7 +69,30 @@ export class McpClient {
       env: env ? { ...process.env, ...env } : process.env,
     });
 
-    const timeoutMs = timeout;
+    // Surface spawn failures (ENOENT, EACCES, etc.)
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => {
+        cleanup();
+        reject(new Error(`Failed to spawn MCP server "${command}": ${err.message}`));
+      };
+      const onSpawn = () => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = () => {
+        this.proc?.off('error', onError);
+        this.proc?.off('spawn', onSpawn);
+      };
+
+      this.proc!.once('error', onError);
+      this.proc!.once('spawn', onSpawn);
+
+      // Already spawned (common when pid is assigned synchronously)
+      if (this.proc!.pid != null) {
+        cleanup();
+        resolve();
+      }
+    });
 
     // Channel: stdout → readline → JSON parse → resolve pending
     this.rl = createInterface({ input: this.proc.stdout! });
@@ -85,57 +112,61 @@ export class McpClient {
             pr.resolve(msg.result);
           }
         }
+        // Notifications / unmatched responses are ignored (valid in MCP)
       } catch {
-        // Non-JSON output from stderr or startup noise — ignore
+        // Non-JSON stdout noise — ignore
       }
     });
 
-    // Stderr: just buffer for errors, surfaced on close
-    let stderr = '';
-    this.proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    this.proc.stderr?.on('data', (chunk: Buffer) => {
+      this.stderr += chunk.toString();
+      // Cap stderr buffer to avoid unbounded growth
+      if (this.stderr.length > 64_000) {
+        this.stderr = this.stderr.slice(-32_000);
+      }
+    });
 
     // Handle unexpected exit
-    this.proc.on('exit', (code) => {
-      if (this.connected) {
-        this.connected = false;
-        // Reject all pending requests
-        this.pending.forEach((pr) => {
-          clearTimeout(pr.timer);
-          pr.reject(new Error(`Server exited (code ${code}): ${stderr.slice(0, 200)}`));
-        });
-        this.pending.clear();
+    this.proc.on('exit', (code, signal) => {
+      const wasConnected = this.connected;
+      this.connected = false;
+      if (this.closed) return;
+      const reason = signal
+        ? `Server killed by signal ${signal}: ${this.stderr.slice(0, 200)}`
+        : `Server exited (code ${code}): ${this.stderr.slice(0, 200)}`;
+      this.rejectAllPending(new Error(reason));
+      // If exit happened before handshake finished, leave pending empty for connect to fail
+      if (!wasConnected && this.pending.size === 0) {
+        // no-op — connect()'s request will have been rejected
       }
     });
 
-    // Wait a tiny bit for process to start, then initialize
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Process did not start')), timeoutMs);
-      if (this.proc!.pid != null) {
-        clearTimeout(timer);
-        resolve();
-      } else {
-        this.proc!.once('spawn', () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      }
+    // Guard against stdin pipe breakage
+    this.proc.stdin?.on('error', (err: Error) => {
+      if (this.closed) return;
+      this.rejectAllPending(new Error(`Server stdin error: ${err.message}`));
     });
 
-    // Send initialize
-    await this.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'cobasaja', version: '0.1.0' },
-    }, timeoutMs);
+    try {
+      // Send initialize
+      await this.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'cobasaja', version: '1.1.0' },
+      }, timeoutMs);
 
-    // Send initialized notification (fire-and-forget)
-    this.sendNotification('notifications/initialized');
+      // Send initialized notification (fire-and-forget)
+      this.sendNotification('notifications/initialized');
 
-    this.connected = true;
+      this.connected = true;
 
-    // Pre-fetch tools list
-    const toolsResult = await this.request('tools/list', {}, timeoutMs) as { tools: McpToolDefinition[] };
-    this._tools = toolsResult.tools ?? [];
+      // Pre-fetch tools list
+      const toolsResult = await this.request('tools/list', {}, timeoutMs) as { tools: McpToolDefinition[] };
+      this._tools = toolsResult.tools ?? [];
+    } catch (err) {
+      await this.close().catch(() => {});
+      throw err;
+    }
   }
 
   /** List available tools */
@@ -144,42 +175,88 @@ export class McpClient {
     return this._tools;
   }
 
+  /** Last captured stderr from the server process */
+  get lastStderr(): string {
+    return this.stderr;
+  }
+
   /** Call an MCP tool and return the result */
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
-    const result = await this.request('tools/call', { name, arguments: args });
+    if (!this.connected || !this.proc) {
+      throw new Error('Not connected — call connect() first');
+    }
+    const result = await this.request('tools/call', { name, arguments: args }, this.config.timeout ?? 10000);
     return result as McpToolResult;
   }
 
   /** Close the connection and kill the server process */
   async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     this.connected = false;
-    // Reject any leftover pending
-    this.pending.forEach((pr) => {
-      clearTimeout(pr.timer);
-      pr.reject(new Error('Connection closed'));
-    });
-    this.pending.clear();
+    this.rejectAllPending(new Error('Connection closed'));
+
     this.rl?.close();
     this.rl = null;
-    if (this.proc && !this.proc.killed) {
-      this.proc.kill();
-      // Give it a moment, then SIGKILL
-      await new Promise(r => setTimeout(r, 200));
-      if (this.proc && !this.proc.killed) {
-        this.proc.kill('SIGKILL');
-      }
-    }
+
+    const proc = this.proc;
     this.proc = null;
     this._tools = null;
+
+    if (!proc || proc.killed) return;
+
+    // Try graceful SIGTERM, then SIGKILL
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        resolve();
+      };
+
+      proc.once('exit', done);
+
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        done();
+        return;
+      }
+
+      const killTimer = setTimeout(() => {
+        try {
+          if (!proc.killed) proc.kill('SIGKILL');
+        } catch { /* already dead */ }
+        // Give SIGKILL a brief moment, then resolve either way
+        setTimeout(done, 100);
+      }, 500);
+    });
+  }
+
+  private rejectAllPending(err: Error): void {
+    this.pending.forEach((pr) => {
+      clearTimeout(pr.timer);
+      pr.reject(err);
+    });
+    this.pending.clear();
   }
 
   private sendNotification(method: string, params?: Record<string, unknown>): void {
+    if (!this.proc?.stdin || this.proc.stdin.destroyed) {
+      throw new Error(`Cannot send notification "${method}": server stdin is closed`);
+    }
     const msg = JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n';
-    this.proc?.stdin?.write(msg);
+    this.proc.stdin.write(msg);
   }
 
   private request(method: string, params: Record<string, unknown>, timeoutMs = 10000): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (!this.proc?.stdin || this.proc.stdin.destroyed || this.closed) {
+        reject(new Error(`Cannot send request "${method}": server is not connected`));
+        return;
+      }
+
       const id = this.nextId++;
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -189,7 +266,11 @@ export class McpClient {
       this.pending.set(id, { resolve, reject, timer });
 
       const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
-      this.proc?.stdin?.write(msg);
+      const ok = this.proc.stdin.write(msg);
+      if (!ok) {
+        // Backpressure — wait for drain, but don't fail the request
+        this.proc.stdin.once('drain', () => {});
+      }
     });
   }
 }

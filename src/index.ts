@@ -22,7 +22,20 @@
  *   });
  */
 
-export { defineServer, describe, it, test, expect, beforeAll, afterAll, beforeEach, afterEach } from './api.js';
-export type { TestContext } from './api.js';
-export type { McpServerConfig, McpToolDefinition, McpToolResult, McpClient } from './client.js';
+export {
+  defineServer,
+  describe,
+  it,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from './api.js';
+export type { TestContext, ItOptions } from './api.js';
+export type { McpServerConfig, McpToolDefinition, McpToolResult } from './client.js';
+export { McpClient } from './client.js';
 export { AssertionError } from './matchers.js';
+export { run } from './runner.js';
+export type { RunnerOptions } from './runner.js';
