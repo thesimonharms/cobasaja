@@ -1,10 +1,20 @@
 /**
- * Unit tests for cobasaja's own modules — utils, matchers, snapshot.
+ * Unit tests for cobasaja's own modules — utils, matchers, snapshot, runner.
  * These import the compiled dist module directly, no MCP server needed.
  */
 
-import { deepEqual, matchObject } from '../dist/utils.js';
-import { describe, it, expect, AssertionError } from '../dist/index.js';
+import { deepEqual, matchObject, withTimeout } from '../dist/utils.js';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  AssertionError,
+} from '../dist/index.js';
+import { cleanStack } from '../dist/matchers.js';
 
 // ── deepEqual ────────────────────────────────────────────────────────────────
 
@@ -19,6 +29,11 @@ describe('deepEqual', () => {
     expect(deepEqual(null, null)).toBe(true);
     expect(deepEqual(undefined, undefined)).toBe(true);
     expect(deepEqual(null, undefined)).toBe(false);
+  });
+
+  it('handles NaN via Object.is', async () => {
+    expect(deepEqual(NaN, NaN)).toBe(true);
+    expect(deepEqual(0, -0)).toBe(false);
   });
 
   it('compares arrays', async () => {
@@ -36,6 +51,13 @@ describe('deepEqual', () => {
     expect(deepEqual({ a: 1, b: 2 }, { a: 1 })).toBe(false);
     expect(deepEqual({ a: { b: 1 } }, { a: { b: 1 } })).toBe(true);
     expect(deepEqual({ a: { b: 1 } }, { a: { b: 2 } })).toBe(false);
+  });
+
+  it('compares dates and regexes', async () => {
+    expect(deepEqual(new Date('2020-01-01'), new Date('2020-01-01'))).toBe(true);
+    expect(deepEqual(new Date('2020-01-01'), new Date('2020-01-02'))).toBe(false);
+    expect(deepEqual(/ab/g, /ab/g)).toBe(true);
+    expect(deepEqual(/ab/g, /ab/i)).toBe(false);
   });
 
   it('treats same reference as equal', async () => {
@@ -60,6 +82,21 @@ describe('matchObject', () => {
   it('returns false for non-objects', async () => {
     expect(matchObject(null, { a: 1 })).toBe(false);
     expect(matchObject(42, {})).toBe(false);
+  });
+});
+
+// ── withTimeout ──────────────────────────────────────────────────────────────
+
+describe('withTimeout', () => {
+  it('resolves when promise finishes in time', async () => {
+    const value = await withTimeout(Promise.resolve(42), 1000);
+    expect(value).toBe(42);
+  });
+
+  it('rejects when promise exceeds timeout', async () => {
+    await expect(async () => {
+      await withTimeout(new Promise(() => {}), 20, 'slow op');
+    }).toThrowAsync('timed out');
   });
 });
 
@@ -229,6 +266,10 @@ describe('expect(fn).toThrow', () => {
     expect(() => { throw new Error('boom'); }).toThrow(Error);
   });
 
+  it('matches error message strings', async () => {
+    expect(() => { throw new Error('not found'); }).toThrow('not found');
+  });
+
   it('passes when no error thrown (inverted)', async () => {
     expect(() => { /* no throw */ }).not.toThrow(AssertionError);
   });
@@ -242,11 +283,25 @@ describe('AssertionError stack cleaning', () => {
       expect(1).toBe(2);
     } catch (e: any) {
       const stack = e.stack || '';
-      // Should NOT contain cobasaja src paths (matchers.ts lines)
+      // Should NOT contain cobasaja src/dist matcher paths
       expect(stack.includes('matchers.ts')).toBe(false);
+      expect(stack.includes('matchers.js')).toBe(false);
       // SHOULD contain the test file
       expect(stack.includes('cobasaja.test.ts')).toBe(true);
     }
+  });
+
+  it('cleanStack helper strips internals', async () => {
+    const raw = [
+      'AssertionError: boom',
+      '    at assert (/workspace/dist/matchers.js:10:5)',
+      '    at Object.<anonymous> (/workspace/tests/cobasaja.test.ts:12:3)',
+      '    at processTicksAndRejections (node:internal/process/task_queues:95:5)',
+    ].join('\n');
+    const cleaned = cleanStack(raw);
+    expect(cleaned.includes('matchers.js')).toBe(false);
+    expect(cleaned.includes('cobasaja.test.ts')).toBe(true);
+    expect(cleaned.includes('node:internal')).toBe(false);
   });
 });
 
@@ -292,11 +347,87 @@ describe('expect().toBeGreaterThan / toBeLessThan', () => {
     expect(() => expect(5).toBeLessThanOrEqual(3)).toThrow(AssertionError);
   });
 });
+
 describe('expect().toBeCloseTo', () => {
   it('compares floating point numbers', async () => {
     expect(() => expect(0.1 + 0.2).toBeCloseTo(0.3)).not.toThrow();
     expect(() => expect(0.1 + 0.2).toBeCloseTo(0.3, 17)).toThrow(AssertionError);
     expect(() => expect(1.0).toBeCloseTo(1.001, 2)).not.toThrow();
     expect(() => expect(1.1).toBeCloseTo(1.0, 1)).toThrow(AssertionError);
+  });
+});
+
+// ── Nested describe + hooks ──────────────────────────────────────────────────
+
+describe('nested describe and hooks', () => {
+  const order: string[] = [];
+
+  beforeAll(() => { order.push('outer:beforeAll'); });
+  afterAll(() => { order.push('outer:afterAll'); });
+  beforeEach(() => { order.push('outer:beforeEach'); });
+  afterEach(() => { order.push('outer:afterEach'); });
+
+  it('runs outer hooks', async () => {
+    order.push('outer:test');
+    expect(order[0]).toBe('outer:beforeAll');
+    expect(order).toContain('outer:beforeEach');
+  });
+
+  describe('inner', () => {
+    beforeAll(() => { order.push('inner:beforeAll'); });
+    beforeEach(() => { order.push('inner:beforeEach'); });
+    afterEach(() => { order.push('inner:afterEach'); });
+    afterAll(() => { order.push('inner:afterAll'); });
+
+    it('inherits parent hooks', async () => {
+      order.push('inner:test');
+      expect(order).toContain('outer:beforeAll');
+      expect(order).toContain('inner:beforeAll');
+      expect(order).toContain('outer:beforeEach');
+      expect(order).toContain('inner:beforeEach');
+    });
+  });
+
+  it('records hook order across nesting', async () => {
+    // By the time this runs, inner block should have completed
+    expect(order).toContain('inner:afterAll');
+    expect(order.indexOf('outer:beforeAll')).toBeLessThan(order.indexOf('inner:beforeAll'));
+  });
+});
+
+// ── Multiple hooks ───────────────────────────────────────────────────────────
+
+describe('multiple hooks of the same type', () => {
+  const calls: string[] = [];
+
+  beforeEach(() => { calls.push('a'); });
+  beforeEach(() => { calls.push('b'); });
+
+  it('runs all beforeEach hooks in order', async () => {
+    expect(calls).toEqual(['a', 'b']);
+  });
+});
+
+// ── Snapshots ────────────────────────────────────────────────────────────────
+
+describe('snapshots', () => {
+  it('creates and matches a snapshot by test name', async () => {
+    expect({ hello: 'world', n: 1 }).toMatchSnapshot();
+  });
+
+  it('supports explicit snapshot names', async () => {
+    expect([1, 2, 3]).toMatchSnapshot('explicit-list');
+  });
+});
+
+// ── it.skip ──────────────────────────────────────────────────────────────────
+
+describe('skip support', () => {
+  it.skip('is skipped and does not fail', async () => {
+    expect(true).toBe(false);
+  });
+
+  it('still runs sibling tests', async () => {
+    expect(true).toBe(true);
   });
 });

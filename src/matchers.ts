@@ -7,7 +7,7 @@ import { deepEqual, matchObject } from './utils.js';
 
 export class Expectation<T> {
   protected actual: T;
-  private isNot: boolean;
+  protected isNot: boolean;
 
   constructor(actual: T, isNot = false) {
     this.actual = actual;
@@ -119,7 +119,7 @@ export class Expectation<T> {
     const precision = Math.pow(10, -numDigits);
     const diff = Math.abs((actual as number) - expected);
     this.assert(
-      typeof actual === 'number' && diff < precision,
+      typeof actual === 'number' && Number.isFinite(actual) && diff < precision,
       `Expected ${actual} to be close to ${expected} (within ${numDigits} decimal places)${this.notStr}`,
     );
   }
@@ -203,7 +203,7 @@ export class Expectation<T> {
   // ── Error assertions ──
 
   /** Assert that a function throws. If errClass is provided, check the error type. */
-  toThrow(errClass?: new (...args: any[]) => Error): void {
+  toThrow(errClassOrMsg?: (new (...args: any[]) => Error) | string): void {
     if (typeof this.actual !== 'function') {
       throw new AssertionError('Expected a function for .toThrow()');
     }
@@ -215,18 +215,7 @@ export class Expectation<T> {
       threw = true;
       thrownError = e;
     }
-    if (errClass) {
-      this.assert(
-        threw && thrownError instanceof errClass,
-        `Expected function to throw ${errClass.name}${this.notStr}` +
-        (threw ? ` but got ${(thrownError as Error).constructor.name}` : ' (did not throw)'),
-      );
-    } else {
-      this.assert(
-        threw,
-        `Expected function to throw${this.notStr} but it did not throw`,
-      );
-    }
+    this.assertThrow(threw, thrownError, errClassOrMsg);
   }
 
   /** Assert that an async function rejects. */
@@ -242,19 +231,29 @@ export class Expectation<T> {
       threw = true;
       thrownError = e;
     }
+    this.assertThrow(threw, thrownError, errClassOrMsg, true);
+  }
+
+  private assertThrow(
+    threw: boolean,
+    thrownError: unknown,
+    errClassOrMsg?: (new (...args: any[]) => Error) | string,
+    async = false,
+  ): void {
+    const kind = async ? 'async function' : 'function';
     if (!threw) {
-      this.assert(false, `Expected async function to throw${this.notStr} but it did not throw`);
+      this.assert(false, `Expected ${kind} to throw${this.notStr} but it did not throw`);
       return;
     }
     if (!errClassOrMsg) {
-      this.assert(threw, `Expected async function to throw${this.notStr} but it did not throw`);
+      this.assert(threw, `Expected ${kind} to throw${this.notStr} but it did not throw`);
     } else if (typeof errClassOrMsg === 'function') {
       this.assert(
-        threw && thrownError instanceof errClassOrMsg,
-        `Expected async function to throw ${errClassOrMsg.name}${this.notStr}` +
-        (threw ? ` but got ${(thrownError as Error).constructor.name}` : ' (did not throw)'),
+        thrownError instanceof errClassOrMsg,
+        `Expected ${kind} to throw ${errClassOrMsg.name}${this.notStr}` +
+        ` but got ${(thrownError as Error)?.constructor?.name ?? typeof thrownError}`,
       );
-    } else if (typeof errClassOrMsg === 'string') {
+    } else {
       const msg = thrownError instanceof Error ? thrownError.message : String(thrownError);
       this.assert(
         msg.includes(errClassOrMsg),
@@ -265,18 +264,18 @@ export class Expectation<T> {
 
   // ── Internal ──
 
-  private get notStr(): string {
+  protected get notStr(): string {
     return this.isNot ? ' (not)' : '';
   }
 
-  private assert(pass: boolean, message: string): void {
+  protected assert(pass: boolean, message: string): void {
     const finalPass = this.isNot ? !pass : pass;
     if (!finalPass) {
       throw new AssertionError(message);
     }
   }
 
-  private repr(val: unknown): string {
+  protected repr(val: unknown): string {
     if (val === null) return 'null';
     if (val === undefined) return 'undefined';
     if (typeof val === 'string') return JSON.stringify(val);
@@ -290,11 +289,37 @@ export class Expectation<T> {
   }
 }
 
+/** Patterns that identify cobasaja internal stack frames */
+const INTERNAL_STACK_RE = /[/\\](?:dist|src)[/\\](?:matchers|api|runner|snapshot|client|utils|cli|index)\.(?:js|ts|mjs|cjs)/;
+
 export class AssertionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AssertionError';
+    if (typeof Error.captureStackTrace === 'function') {
+      Error.captureStackTrace(this, AssertionError);
+    }
+    if (this.stack) {
+      this.stack = cleanStack(this.stack);
+    }
   }
+}
+
+/** Strip cobasaja internals from a stack trace, keeping user/test frames. */
+export function cleanStack(stack: string): string {
+  const lines = stack.split('\n');
+  if (lines.length === 0) return stack;
+  const header = lines[0];
+  const frames = lines.slice(1).filter((line) => {
+    // Keep non-frame lines
+    if (!/^\s+at\s/.test(line)) return true;
+    // Drop cobasaja package internals (but keep tests/)
+    if (INTERNAL_STACK_RE.test(line) && !/[/\\]tests[/\\]/.test(line)) return false;
+    // Drop node:internal frames that clutter output
+    if (/node:internal/.test(line)) return false;
+    return true;
+  });
+  return [header, ...frames].join('\n');
 }
 
 /** Create an expectation */

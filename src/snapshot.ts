@@ -4,7 +4,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 
 interface SnapshotStore {
   [key: string]: unknown;
@@ -12,17 +12,32 @@ interface SnapshotStore {
 
 let updateSnapshots = false;
 const loadedStores = new Map<string, SnapshotStore>();
+const dirtyStores = new Set<string>();
 
 /** Set whether to update snapshots (--update flag) */
 export function setUpdateSnapshots(update: boolean): void {
   updateSnapshots = update;
 }
 
-/** Resolve snapshot file path from test file path and test name */
+/** Clear in-memory snapshot caches (call between test files) */
+export function clearSnapshotCaches(): void {
+  // Flush any dirty stores before clearing
+  for (const testFile of dirtyStores) {
+    try {
+      saveStore(testFile);
+    } catch {
+      // ignore flush errors during reset
+    }
+  }
+  loadedStores.clear();
+  dirtyStores.clear();
+}
+
+/** Resolve snapshot file path from test file path */
 function snapshotPath(testFile: string): string {
   const dir = dirname(testFile);
   const snapDir = join(dir, '__snapshots__');
-  const baseName = testFile.split('/').pop() || 'test';
+  const baseName = basename(testFile);
   return join(snapDir, `${baseName}.snap.json`);
 }
 
@@ -36,6 +51,7 @@ function getStore(testFile: string): SnapshotStore {
         store = JSON.parse(readFileSync(path, 'utf-8'));
       } catch {
         // Corrupt snapshot — start fresh
+        store = {};
       }
     }
     loadedStores.set(testFile, store);
@@ -49,6 +65,7 @@ function saveStore(testFile: string): void {
   const path = snapshotPath(testFile);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(store, null, 2) + '\n');
+  dirtyStores.delete(testFile);
 }
 
 /**
@@ -57,21 +74,25 @@ function saveStore(testFile: string): void {
  * Pass --update to overwrite all snapshots.
  */
 export function toMatchSnapshot(testFile: string, testName: string, actual: unknown): void {
+  if (!testFile) {
+    throw new Error('Cannot take snapshot: test file path is unknown');
+  }
+
   const store = getStore(testFile);
-  const key = `${testName}`;
+  const key = testName || 'snapshot';
 
   if (updateSnapshots || !(key in store)) {
     store[key] = actual;
+    dirtyStores.add(testFile);
     saveStore(testFile);
     return; // Pass on create/update
   }
 
   const expected = store[key];
-  const actualJson = JSON.stringify(actual, null, 2);
-  const expectedJson = JSON.stringify(expected, null, 2);
+  const actualJson = stableStringify(actual);
+  const expectedJson = stableStringify(expected);
 
   if (actualJson !== expectedJson) {
-    // Build a diff message
     const diffLines: string[] = [];
     const actualLines = actualJson.split('\n');
     const expectedLines = expectedJson.split('\n');
@@ -87,16 +108,32 @@ export function toMatchSnapshot(testFile: string, testName: string, actual: unkn
         differences++;
       }
     }
-    if (maxLen > 5 && (actualLines.length !== expectedLines.length)) {
+    if (actualLines.length !== expectedLines.length) {
       diffLines.push(`  ... (${actualLines.length} vs ${expectedLines.length} lines)`);
     }
 
     throw new Error(
-      `Snapshot mismatch: "${testName}"\n\n` +
+      `Snapshot mismatch: "${key}"\n\n` +
       `Expected snapshot:\n${expectedJson.slice(0, 500)}\n\n` +
       `Actual:\n${actualJson.slice(0, 500)}\n\n` +
       `Pass --update to overwrite snapshots.\n` +
       `Diff (first ${differences} differences):\n${diffLines.join('\n')}`
     );
   }
+}
+
+/** JSON.stringify with sorted object keys for stable comparisons */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortKeys(value), null, 2) ?? 'undefined';
+}
+
+function sortKeys(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(sortKeys);
+  const obj = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort()) {
+    sorted[key] = sortKeys(obj[key]);
+  }
+  return sorted;
 }

@@ -4,13 +4,17 @@
 
 **cobasaja** spawns MCP servers over stdio and runs Pest-like `describe`/`it` tests against them. Built for AI-agent tooling where reliability matters.
 
-## v1.0.0 What's New
+## v1.1.0 What's New
 
-- **`toThrowAsync()`** — test async error handling with error class or message matching
-- **Numeric matchers** — `toBeGreaterThan`, `toBeLessThan`, `toBeGreaterThanOrEqual`, `toBeLessThanOrEqual`, `toBeCloseTo`
-- **Smart snapshots** — snapshot keys now use test names instead of a hardcoded fallback (multiple snapshots per test work correctly)
-- **Cleaner errors** — assertion stack traces stripped of cobasaja internals
-- **`--verbose`** — detailed per-file test output flag
+- **TypeScript test loading** — `.test.ts` files run directly via `tsx` (no manual compile step)
+- **Nested `describe`** — proper nesting with inherited hooks, preserving definition order
+- **Multiple hooks** — register any number of `beforeAll` / `beforeEach` / `afterAll` / `afterEach`
+- **`it.skip` / `it.only` / `describe.skip` / `describe.only`** — focus and skip support
+- **Test timeouts** — per-test and global `--timeout`, with clear timeout errors
+- **`--grep` / `--bail`** — filter tests by name; stop on first failure
+- **Hardened MCP client** — spawn error handling, stdin safety, reliable process cleanup
+- **Smart snapshots** — keys use the full describe › test path; stable key ordering
+- **Cleaner errors** — assertion stacks stripped of cobasaja internals
 
 ## Install
 
@@ -52,32 +56,48 @@ npx cobasaja
 
 ## Test Runner
 
-**cobasaja** auto-discovers test files matching `**/*.test.ts` in the project root. Results are reported with pass/fail counts and timing.
+**cobasaja** auto-discovers test files matching `**/*.{test,spec}.{ts,mts,js,mjs}` in the project root. Results are reported with pass/fail/skip counts and timing.
+
+```bash
+npx cobasaja                     # Run all tests
+npx cobasaja --update            # Update snapshots
+npx cobasaja --root ./tests      # Limit discovery root
+npx cobasaja --grep "echo"       # Only matching tests
+npx cobasaja --timeout 5000      # Default per-test timeout (ms)
+npx cobasaja --bail              # Stop after first failure
+npx cobasaja --verbose           # Full error output
+```
 
 ## API
 
 ### `defineServer(config)`
 
-Configure the MCP server under test. Must be called once before any tests.
+Configure the MCP server under test. Optional — omit it for pure unit tests.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `command` | `string` | — | Server binary/command |
 | `args` | `string[]` | `[]` | CLI arguments |
 | `timeout` | `number` | `10000` | Per-call timeout (ms) |
+| `cwd` | `string` | — | Working directory for the server |
+| `env` | `Record<string,string>` | — | Extra env vars (merged with `process.env`) |
 
 ### `describe(name, fn)`
 
-Group tests into a named block. Supports nested `describe`. Runs `beforeEach`/`afterEach` hooks scoped to the block, and `beforeAll`/`afterAll` hooks scoped to the block.
+Group tests into a named block. Supports nesting. Nested blocks inherit parent `beforeEach`/`afterEach` hooks. Also: `describe.skip`, `describe.only`.
 
-### `it(name, fn)`
+### `it(name, fn, options?)`
 
-Define a test case. The async callback receives a context object:
+Define a test case. `options` may be a timeout number or `{ timeout, skip, only }`. Also: `it.skip`, `it.only`, and `test` as an alias.
+
+The async callback receives a context object:
 
 ```ts
-({ tools, call }) => {
+({ tools, call, client, snapshot }) => {
   // tools — the full listTools() response array
   // call(name, args) — call a tool and return the MCP result
+  // client — the raw McpClient (null in unit-test mode)
+  // snapshot(value) — write/compare a named snapshot for this test
 }
 ```
 
@@ -105,6 +125,7 @@ Define a test case. The async callback receives a context object:
 | `.toHaveTool(name)` | Tool exists in MCP tools array |
 | `.toBeSuccessful()` | MCP result has no error |
 | `.toHaveErrored()` | MCP result has error flag |
+| `.toMatchSnapshot(name?)` | Golden-file snapshot (auto-keyed by test name) |
 
 **Assertions on functions:**
 
@@ -112,6 +133,7 @@ Define a test case. The async callback receives a context object:
 |---|---|
 | `.toThrow()` | Function throws |
 | `.toThrow(ErrorClass)` | Throws specific error type |
+| `.toThrow(msg)` | Throws with matching message |
 | `.toThrowAsync()` | Async function rejects |
 | `.toThrowAsync(ErrorClass)` | Async function rejects specific error type |
 | `.toThrowAsync(msg)` | Async function rejects with matching message |
@@ -120,7 +142,7 @@ Define a test case. The async callback receives a context object:
 
 ### `beforeAll(fn)` / `afterAll(fn)` / `beforeEach(fn)` / `afterEach(fn)`
 
-Lifecycle hooks, scoped to the enclosing `describe` block.
+Lifecycle hooks, scoped to the enclosing `describe` block. Multiple hooks of the same type are supported and run in registration order. Nested blocks inherit parent `beforeEach`/`afterEach`.
 
 ### Snapshots
 
