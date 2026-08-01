@@ -1,6 +1,6 @@
 {
   "name": "cobasaja",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Deterministic MCP testing framework — just try it. Spawns MCP servers over stdio, runs Pest-like describe/it tests with snapshot support, and keeps you stress-free.",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,13 +13,23 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist/", "LICENSE"],
+  "files": [
+    "dist/",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "node dist/cli.js",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "test", "testing", "framework", "pest", "deterministic"],
+  "keywords": [
+    "mcp",
+    "test",
+    "testing",
+    "framework",
+    "pest",
+    "deterministic"
+  ],
   "license": "MIT",
   "author": "Simon Harms",
   "repository": {
@@ -36,5 +46,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "tsx": "^4.23.1"
   }
 }

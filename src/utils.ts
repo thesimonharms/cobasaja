@@ -4,9 +4,19 @@
 
 /** Deep equality comparison */
 export function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
+  if (Object.is(a, b)) return true;
   if (a == null || b == null) return a === b;
   if (typeof a !== typeof b) return false;
+
+  // Dates
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() === b.getTime();
+  }
+
+  // RegExp
+  if (a instanceof RegExp && b instanceof RegExp) {
+    return a.source === b.source && a.flags === b.flags;
+  }
 
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
@@ -16,11 +26,16 @@ export function deepEqual(a: unknown, b: unknown): boolean {
     return true;
   }
 
+  // Mismatched array/object
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+
   if (typeof a === 'object' && typeof b === 'object') {
     const aKeys = Object.keys(a as Record<string, unknown>);
     const bKeys = Object.keys(b as Record<string, unknown>);
     if (aKeys.length !== bKeys.length) return false;
+    const bKeySet = new Set(bKeys);
     for (const key of aKeys) {
+      if (!bKeySet.has(key)) return false;
       if (!deepEqual(
         (a as Record<string, unknown>)[key],
         (b as Record<string, unknown>)[key],
@@ -29,7 +44,7 @@ export function deepEqual(a: unknown, b: unknown): boolean {
     return true;
   }
 
-  return a === b;
+  return false;
 }
 
 /** Partial object match — checks that all keys in `expected` match `actual` */
@@ -45,4 +60,28 @@ export function matchObject(actual: unknown, expected: Record<string, unknown>):
     }
   }
   return true;
+}
+
+/** Race a promise against a timeout. Rejects with a clear error on timeout. */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label = 'Operation',
+): Promise<T> {
+  if (ms <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }

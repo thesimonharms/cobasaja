@@ -1,0 +1,11 @@
+{
+  "snapshots creates and matches a snapshot by test name": {
+    "hello": "world",
+    "n": 1
+  },
+  "explicit-list": [
+    1,
+    2,
+    3
+  ]
+}
