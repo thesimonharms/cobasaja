@@ -20,6 +20,8 @@ export interface RunnerOptions {
   pattern?: string;
   /** Root directory to search (default: cwd) */
   root?: string;
+  /** Explicit test files or directories (skips discovery when set) */
+  files?: string[];
   /** Update snapshots */
   update?: boolean;
   /** Verbose output */
@@ -30,6 +32,27 @@ export interface RunnerOptions {
   filter?: string | RegExp;
   /** Stop after first failure */
   bail?: boolean;
+  /** Output format. `json` prints a machine-readable report on stdout. */
+  reporter?: 'spec' | 'json';
+}
+
+export interface JsonTestResult {
+  file: string;
+  describe: string;
+  test: string;
+  status: 'passed' | 'failed' | 'skipped';
+  duration: number;
+  error?: string;
+}
+
+export interface JsonReport {
+  passed: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  duration: number;
+  bailed: boolean;
+  tests: JsonTestResult[];
 }
 
 const PASS = '✓';
@@ -98,6 +121,26 @@ function findTestFiles(root: string, pattern?: string): string[] {
   return results.sort();
 }
 
+function collectTestFiles(root: string, files?: string[], pattern?: string): string[] {
+  if (!files?.length) return findTestFiles(root, pattern);
+  const out: string[] = [];
+  for (const file of files) {
+    const resolved = resolve(file);
+    let stats;
+    try {
+      stats = statSync(resolved);
+    } catch {
+      throw new Error(`Test path not found: ${file}`);
+    }
+    if (stats.isDirectory()) {
+      out.push(...findTestFiles(resolved, pattern));
+    } else {
+      out.push(resolved);
+    }
+  }
+  return [...new Set(out)].sort();
+}
+
 function formatTime(ms: number): string {
   if (ms < 1) return '<1ms';
   if (ms < 1000) return `${ms}ms`;
@@ -133,23 +176,49 @@ export async function run(options: RunnerOptions = {}): Promise<number> {
     setFilter(null);
   }
 
-  const testFiles = findTestFiles(root, options.pattern);
+  const json = options.reporter === 'json';
+  const log = json ? () => {} : console.log.bind(console);
+  const errorLog = json ? () => {} : console.error.bind(console);
+
+  let testFiles: string[];
+  try {
+    testFiles = collectTestFiles(root, options.files, options.pattern);
+  } catch (err: any) {
+    console.error(`Fatal: ${err.message}`);
+    return 1;
+  }
+
   if (testFiles.length === 0) {
-    console.log('No test files found.');
+    if (json) {
+      const empty: JsonReport = {
+        passed: 0, failed: 0, skipped: 0, total: 0, duration: 0, bailed: false, tests: [],
+      };
+      console.log(JSON.stringify(empty, null, 2));
+    } else {
+      console.log('No test files found.');
+    }
     return 0;
   }
 
-  console.log(`\n  cobasaja — just try\n`);
-  if (update) console.log('  (snapshot update mode)\n');
+  log(`\n  cobasaja — just try\n`);
+  if (update) log('  (snapshot update mode)\n');
 
   const allResults: TestResult[] = [];
+  const resultFiles: string[] = [];
   let bailed = false;
+
+  const pushResults = (file: string, results: TestResult[]) => {
+    for (const r of results) {
+      allResults.push(r);
+      resultFiles.push(file);
+    }
+  };
 
   for (const file of testFiles) {
     if (bailed) break;
 
     const rel = relative(root, file);
-    console.log(` ${rel}`);
+    log(` ${rel}`);
 
     reset();
     setTestFile(file);
@@ -157,14 +226,14 @@ export async function run(options: RunnerOptions = {}): Promise<number> {
     try {
       await loadTestFile(file);
     } catch (err: any) {
-      console.error(`  ${FAIL} Failed to load: ${err.message}`);
-      allResults.push({
+      errorLog(`  ${FAIL} Failed to load: ${err.message}`);
+      pushResults(rel, [{
         describe: '',
         test: `Load ${rel}`,
         passed: false,
         error: err.message,
         duration: 0,
-      });
+      }]);
       if (options.bail) bailed = true;
       continue;
     }
@@ -173,41 +242,41 @@ export async function run(options: RunnerOptions = {}): Promise<number> {
     try {
       fileResults = await runAll();
     } catch (err: any) {
-      console.error(`  ${FAIL} Runner error: ${err.message}`);
-      allResults.push({
+      errorLog(`  ${FAIL} Runner error: ${err.message}`);
+      pushResults(rel, [{
         describe: '',
         test: `Run ${rel}`,
         passed: false,
         error: err.message,
         duration: 0,
-      });
+      }]);
       if (options.bail) bailed = true;
       continue;
     } finally {
       clearSnapshotCaches();
     }
 
-    allResults.push(...fileResults);
+    pushResults(rel, fileResults);
     for (const r of fileResults) {
       const mark = r.skipped ? SKIP : r.passed ? PASS : FAIL;
       const desc = r.describe ? `${r.describe} › ` : '';
       const skipLabel = r.skipped ? ' (skipped)' : '';
-      console.log(`  ${mark} ${desc}${r.test}${skipLabel} (${formatTime(r.duration)})`);
+      log(`  ${mark} ${desc}${r.test}${skipLabel} (${formatTime(r.duration)})`);
       if (!r.passed && !r.skipped && r.error) {
         const lines = r.error.split('\n');
         for (const line of lines.slice(0, options.verbose ? lines.length : 8)) {
-          console.log(`      ${line}`);
+          log(`      ${line}`);
         }
         if (!options.verbose && lines.length > 8) {
-          console.log(`      ... (${lines.length - 8} more lines, use --verbose)`);
+          log(`      ... (${lines.length - 8} more lines, use --verbose)`);
         }
       }
     }
-    console.log();
+    log();
     if (options.verbose) {
-      const failed = fileResults.filter(r => !r.passed && !r.skipped).length;
-      const skipped = fileResults.filter(r => r.skipped).length;
-      console.log(`  ${fileResults.length} tests, ${failed} failed, ${skipped} skipped`);
+      const failedCount = fileResults.filter(r => !r.passed && !r.skipped).length;
+      const skippedCount = fileResults.filter(r => r.skipped).length;
+      log(`  ${fileResults.length} tests, ${failedCount} failed, ${skippedCount} skipped`);
     }
 
     if (options.bail && fileResults.some(r => !r.passed && !r.skipped)) {
@@ -221,16 +290,36 @@ export async function run(options: RunnerOptions = {}): Promise<number> {
   const total = allResults.length;
   const totalDuration = allResults.reduce((s, r) => s + r.duration, 0);
 
-  let summary = `Results: ${passed.length}/${total} passed (${formatTime(totalDuration)})`;
-  if (skipped.length > 0) summary += `, ${skipped.length} skipped`;
-  if (bailed) summary += ` (bailed)`;
-  console.log(summary);
+  if (json) {
+    const report: JsonReport = {
+      passed: passed.length,
+      failed: failed.length,
+      skipped: skipped.length,
+      total,
+      duration: totalDuration,
+      bailed,
+      tests: allResults.map((r, i) => ({
+        file: resultFiles[i],
+        describe: r.describe,
+        test: r.test,
+        status: r.skipped ? 'skipped' : r.passed ? 'passed' : 'failed',
+        duration: r.duration,
+        ...(r.error && !r.skipped && !r.passed ? { error: r.error } : {}),
+      })),
+    };
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    let summary = `Results: ${passed.length}/${total} passed (${formatTime(totalDuration)})`;
+    if (skipped.length > 0) summary += `, ${skipped.length} skipped`;
+    if (bailed) summary += ` (bailed)`;
+    console.log(summary);
 
-  if (failed.length > 0) {
-    console.log(`\nFailed tests:`);
-    for (const f of failed) {
-      const label = f.describe ? `${f.describe} › ${f.test}` : f.test;
-      console.log(`  ${FAIL} ${label}`);
+    if (failed.length > 0) {
+      console.log(`\nFailed tests:`);
+      for (const f of failed) {
+        const label = f.describe ? `${f.describe} › ${f.test}` : f.test;
+        console.log(`  ${FAIL} ${label}`);
+      }
     }
   }
 

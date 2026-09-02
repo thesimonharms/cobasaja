@@ -25,10 +25,103 @@ export interface McpToolDefinition {
   inputSchema?: Record<string, unknown>;
 }
 
+export interface McpContentPart {
+  type: string;
+  text?: string;
+  data?: string;
+  mimeType?: string;
+  uri?: string;
+  blob?: string;
+}
+
 export interface McpToolResult {
-  content: { type: string; text?: string; data?: string; mimeType?: string }[];
+  content: McpContentPart[];
   isError?: boolean;
+  /** Concatenated text parts. Attached by cobasaja; not part of the wire payload. */
+  readonly text: string;
   [key: string]: unknown;
+}
+
+export interface McpResource {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpResourceContents {
+  contents: McpContentPart[];
+  /** Concatenated text contents. Attached by cobasaja; not part of the wire payload. */
+  readonly text: string;
+}
+
+export interface McpPromptArgument {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface McpPrompt {
+  name: string;
+  description?: string;
+  arguments?: McpPromptArgument[];
+}
+
+export interface McpPromptMessage {
+  role: string;
+  content: McpContentPart | McpContentPart[];
+}
+
+export interface McpPromptResult {
+  description?: string;
+  messages: McpPromptMessage[];
+  /** Concatenated text from all message content parts. */
+  readonly text: string;
+}
+
+export interface McpServerCapabilities {
+  tools?: Record<string, unknown>;
+  resources?: Record<string, unknown>;
+  prompts?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** Join text-typed content parts with newlines. */
+export function extractText(content: McpContentPart[] | undefined | null): string {
+  if (!content?.length) return '';
+  return content
+    .filter((part) => part.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('\n');
+}
+
+function withText<T extends object>(value: T, content: McpContentPart[] | undefined): T & { text: string } {
+  Object.defineProperty(value, 'text', {
+    get() {
+      return extractText(content);
+    },
+    enumerable: false,
+    configurable: true,
+  });
+  return value as T & { text: string };
+}
+
+function isMethodNotFound(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /method not found/i.test(message);
+}
+
+function promptText(messages: McpPromptMessage[] | undefined): string {
+  if (!messages?.length) return '';
+  const parts: McpContentPart[] = [];
+  for (const message of messages) {
+    if (Array.isArray(message.content)) {
+      parts.push(...message.content);
+    } else if (message.content) {
+      parts.push(message.content);
+    }
+  }
+  return extractText(parts);
 }
 
 interface PendingRequest {
@@ -45,6 +138,9 @@ export class McpClient {
   private pending = new Map<string | number, PendingRequest>();
   private nextId = 1;
   private _tools: McpToolDefinition[] | null = null;
+  private _resources: McpResource[] = [];
+  private _prompts: McpPrompt[] = [];
+  private _capabilities: McpServerCapabilities = {};
   private config: McpServerConfig;
   private connected = false;
   private stderr = '';
@@ -149,20 +245,22 @@ export class McpClient {
 
     try {
       // Send initialize
-      await this.request('initialize', {
+      const init = await this.request('initialize', {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'cobasaja', version: '1.1.0' },
-      }, timeoutMs);
+        clientInfo: { name: 'cobasaja', version: '1.2.0' },
+      }, timeoutMs) as { capabilities?: McpServerCapabilities };
+
+      this._capabilities = init?.capabilities ?? {};
 
       // Send initialized notification (fire-and-forget)
       this.sendNotification('notifications/initialized');
 
       this.connected = true;
 
-      // Pre-fetch tools list
-      const toolsResult = await this.request('tools/list', {}, timeoutMs) as { tools: McpToolDefinition[] };
-      this._tools = toolsResult.tools ?? [];
+      this._tools = await this.listTools();
+      this._resources = await this.listResources();
+      this._prompts = await this.listPrompts();
     } catch (err) {
       await this.close().catch(() => {});
       throw err;
@@ -175,18 +273,119 @@ export class McpClient {
     return this._tools;
   }
 
+  /** Cached resources from connect-time `resources/list` (empty if unsupported). */
+  get resources(): McpResource[] {
+    this.assertConnected();
+    return this._resources;
+  }
+
+  /** Cached prompts from connect-time `prompts/list` (empty if unsupported). */
+  get prompts(): McpPrompt[] {
+    this.assertConnected();
+    return this._prompts;
+  }
+
+  /** Server capabilities advertised during initialize. */
+  get capabilities(): McpServerCapabilities {
+    return this._capabilities;
+  }
+
   /** Last captured stderr from the server process */
   get lastStderr(): string {
     return this.stderr;
   }
 
-  /** Call an MCP tool and return the result */
+  /** Re-fetch `tools/list` and update the cached list. */
+  async listTools(): Promise<McpToolDefinition[]> {
+    this.assertConnected();
+    const result = await this.request('tools/list', {}, this.config.timeout ?? 10000) as { tools?: McpToolDefinition[] };
+    this._tools = result.tools ?? [];
+    return this._tools;
+  }
+
+  /** Re-fetch `resources/list`. Returns [] if the server does not advertise resources. */
+  async listResources(): Promise<McpResource[]> {
+    this.assertConnected();
+    if (!this.supports('resources')) {
+      this._resources = [];
+      return this._resources;
+    }
+    try {
+      const result = await this.request('resources/list', {}, this.config.timeout ?? 10000) as { resources?: McpResource[] };
+      this._resources = result.resources ?? [];
+    } catch (err) {
+      if (isMethodNotFound(err)) {
+        this._resources = [];
+      } else {
+        throw err;
+      }
+    }
+    return this._resources;
+  }
+
+  /** Read a resource by URI. */
+  async readResource(uri: string): Promise<McpResourceContents> {
+    this.assertConnected();
+    const result = await this.request('resources/read', { uri }, this.config.timeout ?? 10000) as { contents?: McpContentPart[] };
+    const contents = result.contents ?? [];
+    return withText({ contents }, contents);
+  }
+
+  /** Re-fetch `prompts/list`. Returns [] if the server does not advertise prompts. */
+  async listPrompts(): Promise<McpPrompt[]> {
+    this.assertConnected();
+    if (!this.supports('prompts')) {
+      this._prompts = [];
+      return this._prompts;
+    }
+    try {
+      const result = await this.request('prompts/list', {}, this.config.timeout ?? 10000) as { prompts?: McpPrompt[] };
+      this._prompts = result.prompts ?? [];
+    } catch (err) {
+      if (isMethodNotFound(err)) {
+        this._prompts = [];
+      } else {
+        throw err;
+      }
+    }
+    return this._prompts;
+  }
+
+  /** Get a prompt template, optionally with arguments. */
+  async getPrompt(name: string, args: Record<string, string> = {}): Promise<McpPromptResult> {
+    this.assertConnected();
+    const result = await this.request(
+      'prompts/get',
+      { name, arguments: args },
+      this.config.timeout ?? 10000,
+    ) as { description?: string; messages?: McpPromptMessage[] };
+    const messages = result.messages ?? [];
+    const wrapped = { description: result.description, messages } as McpPromptResult;
+    Object.defineProperty(wrapped, 'text', {
+      get() {
+        return promptText(messages);
+      },
+      enumerable: false,
+      configurable: true,
+    });
+    return wrapped;
+  }
+
+  /** Call an MCP tool and return the result (includes a non-enumerable `.text` helper). */
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
+    this.assertConnected();
+    const result = await this.request('tools/call', { name, arguments: args }, this.config.timeout ?? 10000) as McpToolResult;
+    return withText(result, result.content);
+  }
+
+  private assertConnected(): void {
     if (!this.connected || !this.proc) {
       throw new Error('Not connected — call connect() first');
     }
-    const result = await this.request('tools/call', { name, arguments: args }, this.config.timeout ?? 10000);
-    return result as McpToolResult;
+  }
+
+  private supports(capability: 'resources' | 'prompts' | 'tools'): boolean {
+    return this._capabilities[capability] != null;
   }
 
   /** Close the connection and kill the server process */
@@ -202,6 +401,8 @@ export class McpClient {
     const proc = this.proc;
     this.proc = null;
     this._tools = null;
+    this._resources = [];
+    this._prompts = [];
 
     if (!proc || proc.killed) return;
 

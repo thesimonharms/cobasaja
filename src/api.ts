@@ -20,7 +20,15 @@
  *   });
  */
 
-import type { McpServerConfig, McpToolDefinition, McpToolResult } from './client.js';
+import type {
+  McpPrompt,
+  McpPromptResult,
+  McpResource,
+  McpResourceContents,
+  McpServerConfig,
+  McpToolDefinition,
+  McpToolResult,
+} from './client.js';
 import { McpClient } from './client.js';
 import { Expectation, cleanStack } from './matchers.js';
 import { toMatchSnapshot, clearSnapshotCaches } from './snapshot.js';
@@ -28,12 +36,20 @@ import { withTimeout } from './utils.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-/** Context passed to every test function */
+/** Context passed to every test function and lifecycle hook */
 export interface TestContext {
   /** Pre-fetched tool definitions from the MCP server */
   tools: McpToolDefinition[];
+  /** Pre-fetched resource list (empty if the server has none) */
+  resources: McpResource[];
+  /** Pre-fetched prompt list (empty if the server has none) */
+  prompts: McpPrompt[];
   /** Call any MCP tool by name with arguments */
   call: (name: string, args?: Record<string, unknown>) => Promise<McpToolResult>;
+  /** Read a resource by URI */
+  readResource: (uri: string) => Promise<McpResourceContents>;
+  /** Get a prompt template, optionally with arguments */
+  getPrompt: (name: string, args?: Record<string, string>) => Promise<McpPromptResult>;
   /** The raw MCP client for advanced use (null in unit-test mode) */
   client: McpClient | null;
   /** Take a snapshot of a value (test file resolved automatically) */
@@ -41,7 +57,7 @@ export interface TestContext {
 }
 
 type TestFn = (ctx: TestContext) => void | Promise<void>;
-type HookFn = () => void | Promise<void>;
+type HookFn = (ctx: TestContext) => void | Promise<void>;
 
 export interface ItOptions {
   /** Per-test timeout in ms. Overrides the default. */
@@ -318,12 +334,20 @@ function collectTests(blocks: DescribeBlock[], onlyMode: boolean): CollectedTest
   return out;
 }
 
+function noServer(method: string): () => Promise<never> {
+  return async () => {
+    throw new Error(`No MCP server configured — call defineServer() before using ${method}()`);
+  };
+}
+
 function makeUnitContext(): TestContext {
   return {
     tools: [],
-    call: async () => {
-      throw new Error('No MCP server configured — call defineServer()');
-    },
+    resources: [],
+    prompts: [],
+    call: noServer('call'),
+    readResource: noServer('readResource'),
+    getPrompt: noServer('getPrompt'),
     client: null,
     snapshot: (value: unknown) => {
       toMatchSnapshot(currentTestFile, currentTestName || 'snapshot', value);
@@ -331,9 +355,22 @@ function makeUnitContext(): TestContext {
   };
 }
 
-async function runHooks(hooks: HookFn[], label: string): Promise<void> {
+function makeServerContext(client: McpClient): TestContext {
+  return {
+    tools: client.tools,
+    resources: client.resources,
+    prompts: client.prompts,
+    call: (name, args) => client.callTool(name, args),
+    readResource: (uri) => client.readResource(uri),
+    getPrompt: (name, args) => client.getPrompt(name, args),
+    client,
+    snapshot: (value) => toMatchSnapshot(currentTestFile, currentTestName || 'snapshot', value),
+  };
+}
+
+async function runHooks(hooks: HookFn[], label: string, ctx: TestContext): Promise<void> {
   for (const hook of hooks) {
-    await withTimeout(Promise.resolve(hook()), defaultTimeout, label);
+    await withTimeout(Promise.resolve(hook(ctx)), defaultTimeout, label);
   }
 }
 
@@ -354,12 +391,7 @@ export async function runAll(): Promise<TestResult[]> {
     client = new McpClient(serverConfig);
     try {
       await client.connect();
-      ctx = {
-        tools: client.tools,
-        call: (name, args) => client!.callTool(name, args),
-        client,
-        snapshot: (value) => toMatchSnapshot(currentTestFile, currentTestName || 'snapshot', value),
-      };
+      ctx = makeServerContext(client);
     } catch (err: any) {
       for (const item of collected) {
         results.push({
@@ -393,7 +425,7 @@ export async function runAll(): Promise<TestResult[]> {
       afterAllPending.set(blk, left);
       if (left === 0 && blk.afterAll.length > 0) {
         try {
-          await runHooks(blk.afterAll, `afterAll (${blk.name || 'root'})`);
+          await runHooks(blk.afterAll, `afterAll (${blk.name || 'root'})`, ctx);
         } catch (err: any) {
           results.push({
             describe: blk.name,
@@ -422,7 +454,7 @@ export async function runAll(): Promise<TestResult[]> {
           beforeAllDone.add(b);
           if (!t.skip && b.beforeAll.length > 0) {
             try {
-              await runHooks(b.beforeAll, `beforeAll (${b.name || 'root'})`);
+              await runHooks(b.beforeAll, `beforeAll (${b.name || 'root'})`, ctx);
             } catch (err: any) {
               beforeAllFailed.add(b);
               setupFailed = true;
@@ -471,7 +503,7 @@ export async function runAll(): Promise<TestResult[]> {
         const timeout = t.timeout ?? defaultTimeout;
         const start = performance.now();
         try {
-          await runHooks(beforeEach, 'beforeEach');
+          await runHooks(beforeEach, 'beforeEach', ctx);
           await withTimeout(Promise.resolve(t.fn(ctx)), timeout, `Test "${t.name}"`);
           results.push({
             describe: fullDescribe,
@@ -490,7 +522,7 @@ export async function runAll(): Promise<TestResult[]> {
           });
         } finally {
           try {
-            await runHooks(afterEach, 'afterEach');
+            await runHooks(afterEach, 'afterEach', ctx);
           } catch (err: any) {
             const last = results[results.length - 1];
             if (last && last.passed) {
