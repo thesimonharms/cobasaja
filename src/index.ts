@@ -12,6 +12,7 @@
  *     expect(tools).toHaveTool('greet');
  *     const r = await call('greet', { name: 'World' });
  *     expect(r).toBeSuccessful();
+ *     expect(r).toHaveText(/World/);
  *   });
  *
  *   describe('calculator', () => {
@@ -34,8 +35,20 @@ export {
   afterEach,
 } from './api.js';
 export type { TestContext, ItOptions } from './api.js';
-export type { McpServerConfig, McpToolDefinition, McpToolResult } from './client.js';
-export { McpClient } from './client.js';
-export { AssertionError } from './matchers.js';
+export type {
+  McpServerConfig,
+  McpToolDefinition,
+  McpToolResult,
+  McpResource,
+  McpResourceContents,
+  McpPrompt,
+  McpPromptResult,
+  McpPromptArgument,
+  McpPromptMessage,
+  McpContentPart,
+  McpServerCapabilities,
+} from './client.js';
+export { McpClient, extractText } from './client.js';
+export { AssertionError, textOf } from './matchers.js';
 export { run } from './runner.js';
-export type { RunnerOptions } from './runner.js';
+export type { RunnerOptions, JsonReport, JsonTestResult } from './runner.js';

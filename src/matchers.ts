@@ -3,7 +3,27 @@
  * Supports chaining, `.not` modifier, and MCP-specific matchers.
  */
 
+import { extractText } from './client.js';
 import { deepEqual, matchObject } from './utils.js';
+
+/** Best-effort text extraction from MCP results, content arrays, or strings. */
+export function textOf(actual: unknown): string {
+  if (typeof actual === 'string') return actual;
+  if (actual == null || typeof actual !== 'object') return '';
+  const obj = actual as Record<string, unknown>;
+  if (typeof obj.text === 'string') return obj.text;
+  if (Array.isArray(obj.content)) return extractText(obj.content);
+  if (Array.isArray(obj.contents)) return extractText(obj.contents);
+  if (Array.isArray(obj.messages)) {
+    const parts = [];
+    for (const message of obj.messages as { content?: unknown }[]) {
+      if (Array.isArray(message.content)) parts.push(...message.content);
+      else if (message.content && typeof message.content === 'object') parts.push(message.content);
+    }
+    return extractText(parts as import('./client.js').McpContentPart[]);
+  }
+  return '';
+}
 
 export class Expectation<T> {
   protected actual: T;
@@ -124,6 +144,18 @@ export class Expectation<T> {
     );
   }
 
+  // ── String match ──
+
+  /** String matches a RegExp (or a string treated as a RegExp). */
+  toMatch(pattern: RegExp | string): void {
+    const actual = typeof this.actual === 'string' ? this.actual : String(this.actual);
+    const re = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+    this.assert(
+      re.test(actual),
+      `Expected ${this.repr(actual)} to match ${re}${this.notStr}`,
+    );
+  }
+
   // ── Containment ──
 
   /** String or array contains */
@@ -197,6 +229,41 @@ export class Expectation<T> {
       `Expected tools to include "${name}"${this.notStr}. Available: [${
         tools.map((t: any) => t.name).join(', ')
       }]`,
+    );
+  }
+
+  /** Resource list includes a resource by URI or name */
+  toHaveResource(uriOrName: string): void {
+    const resources = Array.isArray(this.actual) ? this.actual : [];
+    const pass = resources.some((r: any) => r.uri === uriOrName || r.name === uriOrName);
+    this.assert(
+      pass,
+      `Expected resources to include "${uriOrName}"${this.notStr}. Available: [${
+        resources.map((r: any) => r.uri ?? r.name).join(', ')
+      }]`,
+    );
+  }
+
+  /** Prompt list includes a prompt by name */
+  toHavePrompt(name: string): void {
+    const prompts = Array.isArray(this.actual) ? this.actual : [];
+    const pass = prompts.some((p: any) => p.name === name);
+    this.assert(
+      pass,
+      `Expected prompts to include "${name}"${this.notStr}. Available: [${
+        prompts.map((p: any) => p.name).join(', ')
+      }]`,
+    );
+  }
+
+  /** MCP result / content text equals a string or matches a RegExp */
+  toHaveText(expected: string | RegExp): void {
+    const text = textOf(this.actual);
+    const pass = typeof expected === 'string' ? text === expected : expected.test(text);
+    const wanted = typeof expected === 'string' ? this.repr(expected) : String(expected);
+    this.assert(
+      pass,
+      `Expected MCP text ${this.notStr} to be ${wanted} but got ${this.repr(text)}`,
     );
   }
 
