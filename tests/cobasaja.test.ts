@@ -14,7 +14,8 @@ import {
   afterEach,
   AssertionError,
 } from '../dist/index.js';
-import { cleanStack } from '../dist/matchers.js';
+import { cleanStack, textOf } from '../dist/matchers.js';
+import { extractText } from '../dist/client.js';
 
 // ── deepEqual ────────────────────────────────────────────────────────────────
 
@@ -223,6 +224,46 @@ describe('expect().toBeSuccessful', () => {
   });
 });
 
+describe('expect().toMatch', () => {
+  it('matches strings against regexes', async () => {
+    expect(() => expect('hello world').toMatch(/world/)).not.toThrow();
+    expect(() => expect('hello world').toMatch('hel+o')).not.toThrow();
+    expect(() => expect('hello world').toMatch(/xyz/)).toThrow(AssertionError);
+  });
+});
+
+describe('expect().toHaveText / toHaveResource / toHavePrompt', () => {
+  it('toHaveText reads MCP content parts', async () => {
+    const result = { content: [{ type: 'text', text: 'hello' }] };
+    expect(() => expect(result).toHaveText('hello')).not.toThrow();
+    expect(() => expect(result).toHaveText(/ell/)).not.toThrow();
+    expect(() => expect(result).toHaveText('nope')).toThrow(AssertionError);
+  });
+
+  it('toHaveResource matches uri or name', async () => {
+    const resources = [{ uri: 'memo://hello', name: 'hello' }];
+    expect(() => expect(resources).toHaveResource('memo://hello')).not.toThrow();
+    expect(() => expect(resources).toHaveResource('hello')).not.toThrow();
+    expect(() => expect(resources).toHaveResource('missing')).toThrow(AssertionError);
+  });
+
+  it('toHavePrompt matches name', async () => {
+    const prompts = [{ name: 'greet' }];
+    expect(() => expect(prompts).toHavePrompt('greet')).not.toThrow();
+    expect(() => expect(prompts).toHavePrompt('missing')).toThrow(AssertionError);
+  });
+});
+
+describe('extractText / textOf', () => {
+  it('joins text content parts', async () => {
+    expect(extractText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }])).toBe('a\nb');
+    expect(extractText([{ type: 'image', data: 'xx' }])).toBe('');
+    expect(textOf({ content: [{ type: 'text', text: 'hi' }] })).toBe('hi');
+    expect(textOf({ contents: [{ type: 'text', text: 'res' }] })).toBe('res');
+    expect(textOf('plain')).toBe('plain');
+  });
+});
+
 describe('expect().toHaveErrored', () => {
   it('passes on errored MCP result', async () => {
     expect(() => expect({ content: [], isError: true }).toHaveErrored()).not.toThrow();
@@ -392,6 +433,19 @@ describe('nested describe and hooks', () => {
     // By the time this runs, inner block should have completed
     expect(order).toContain('inner:afterAll');
     expect(order.indexOf('outer:beforeAll')).toBeLessThan(order.indexOf('inner:beforeAll'));
+  });
+});
+
+describe('test context in unit mode', () => {
+  it('provides empty MCP collections and no client', async (ctx) => {
+    expect(ctx.tools).toEqual([]);
+    expect(ctx.resources).toEqual([]);
+    expect(ctx.prompts).toEqual([]);
+    expect(ctx.client).toBeNull();
+  });
+
+  it('call() explains that no server is configured', async ({ call }) => {
+    await expect(async () => { await call('echo'); }).toThrowAsync('defineServer');
   });
 });
 

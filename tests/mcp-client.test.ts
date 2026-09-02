@@ -1,64 +1,19 @@
 /**
- * Integration tests for McpClient against a tiny mock MCP stdio server.
+ * Integration tests for McpClient against the mock MCP stdio server.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '../dist/index.js';
 import { McpClient } from '../dist/client.js';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-const mockServerPath = join(tmpdir(), `cobasaja-mock-mcp-${process.pid}.mjs`);
-
-function ensureMockServer(): void {
-  if (existsSync(mockServerPath)) return;
-  mkdirSync(tmpdir(), { recursive: true });
-  writeFileSync(mockServerPath, `
-import { createInterface } from 'node:readline';
-
-const rl = createInterface({ input: process.stdin });
-const tools = [
-  { name: 'echo', description: 'Echoes input', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } },
-  { name: 'fail', description: 'Returns an error result' },
-];
-
-function send(msg) {
-  process.stdout.write(JSON.stringify(msg) + '\\n');
-}
-
-rl.on('line', (line) => {
-  let msg;
-  try { msg = JSON.parse(line); } catch { return; }
-  const { id, method, params } = msg;
-  if (method === 'initialize') {
-    send({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'mock', version: '0.0.1' } } });
-  } else if (method === 'notifications/initialized') {
-    // no-op
-  } else if (method === 'tools/list') {
-    send({ jsonrpc: '2.0', id, result: { tools } });
-  } else if (method === 'tools/call') {
-    if (params?.name === 'echo') {
-      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: String(params.arguments?.text ?? '') }] } });
-    } else if (params?.name === 'fail') {
-      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'boom' }], isError: true } });
-    } else {
-      send({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Unknown tool' } });
-    }
-  } else if (id != null) {
-    send({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } });
-  }
-});
-`);
-}
-
-ensureMockServer();
+const mockServerPath = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'mock-mcp-server.mjs');
 
 describe('McpClient', () => {
   describe('against mock server', () => {
     let client: McpClient;
 
     beforeAll(async () => {
-      ensureMockServer();
       client = new McpClient({
         command: 'node',
         args: [mockServerPath],
@@ -77,21 +32,75 @@ describe('McpClient', () => {
       expect(client.tools).toHaveTool('fail');
     });
 
-    it('calls echo successfully', async () => {
+    it('lists resources and prompts after connect', async () => {
+      expect(client.resources).toHaveResource('memo://hello');
+      expect(client.resources).toHaveResource('hello');
+      expect(client.prompts).toHavePrompt('greet');
+    });
+
+    it('calls echo successfully and exposes .text', async () => {
       const result = await client.callTool('echo', { text: 'hello' });
       expect(result).toBeSuccessful();
       expect(result.content[0].text).toBe('hello');
+      expect(result.text).toBe('hello');
+      expect(result).toHaveText('hello');
     });
 
     it('surfaces tool-level errors via isError', async () => {
       const result = await client.callTool('fail', {});
       expect(result).toHaveErrored();
+      expect(result).toHaveText('boom');
     });
 
     it('rejects unknown tools with RPC error', async () => {
       await expect(async () => {
         await client.callTool('missing', {});
       }).toThrowAsync('Unknown tool');
+    });
+
+    it('reads a resource', async () => {
+      const resource = await client.readResource('memo://hello');
+      expect(resource).toHaveText('hello from resource');
+      expect(resource.text).toBe('hello from resource');
+    });
+
+    it('gets a prompt with arguments', async () => {
+      const prompt = await client.getPrompt('greet', { name: 'Ada' });
+      expect(prompt).toHaveText('Say hello to Ada');
+      expect(prompt.text).toMatch(/Ada/);
+    });
+  });
+
+  describe('tools-only servers', () => {
+    it('connects when resources and prompts are not advertised', async () => {
+      const { writeFileSync, mkdirSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const path = join(tmpdir(), `cobasaja-tools-only-${process.pid}.mjs`);
+      mkdirSync(tmpdir(), { recursive: true });
+      writeFileSync(path, `
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin });
+function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n'); }
+rl.on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'tools-only', version: '0' } } });
+  } else if (msg.method === 'tools/list') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'ping' }] } });
+  } else if (msg.id != null) {
+    send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found' } });
+  }
+});
+`);
+      const client = new McpClient({ command: 'node', args: [path], timeout: 4000 });
+      try {
+        await client.connect();
+        expect(client.tools).toHaveTool('ping');
+        expect(client.resources).toHaveLength(0);
+        expect(client.prompts).toHaveLength(0);
+      } finally {
+        await client.close();
+      }
     });
   });
 
