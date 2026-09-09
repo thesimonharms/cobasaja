@@ -1,3 +1,7 @@
+> **Moved.** This GitHub copy is an archive. Use the Forgejo repository.
+>
+> **Canonical repository:** https://git.simonharms.com/thesimonharms/cobasaja
+
 # cobasaja
 
 > *Just try it* — a deterministic MCP testing framework for TypeScript.
